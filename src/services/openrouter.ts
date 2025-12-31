@@ -439,18 +439,26 @@ export async function chatWithTherapistStream(
 
     const decoder = new TextDecoder();
     let fullMessage = '';
+    let buffer = ''; // Buffer for incomplete lines
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
+      // Append new data to buffer
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete lines
+      const lines = buffer.split('\n');
+      // Keep the last incomplete line in the buffer
+      buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith('data: ')) {
+          const data = trimmedLine.slice(6).trim();
           if (data === '[DONE]') continue;
+          if (!data) continue;
 
           try {
             const parsed = JSON.parse(data);
@@ -460,8 +468,25 @@ export async function chatWithTherapistStream(
               onChunk(content);
             }
           } catch {
-            // Skip malformed JSON lines
+            // Skip malformed JSON lines (might be partial)
           }
+        }
+      }
+    }
+
+    // Process any remaining data in buffer
+    if (buffer.trim().startsWith('data: ')) {
+      const data = buffer.trim().slice(6).trim();
+      if (data && data !== '[DONE]') {
+        try {
+          const parsed = JSON.parse(data);
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) {
+            fullMessage += content;
+            onChunk(content);
+          }
+        } catch {
+          // Skip malformed JSON
         }
       }
     }

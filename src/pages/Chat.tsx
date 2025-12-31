@@ -48,18 +48,23 @@ export function Chat() {
     const userMessage = input.trim();
     setInput('');
     setError(null);
-
-    addChatMessage({ role: 'user', content: userMessage });
     setIsLoading(true);
+
+    // Build conversation history from CURRENT chat history (before adding new messages)
+    // This includes all previous exchanges
+    const conversationHistory = chatHistory
+      .filter((msg) => msg.content.trim() !== '') // Exclude empty messages
+      .map((msg) => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+      }));
+
+    // Add user message to the store
+    addChatMessage({ role: 'user', content: userMessage });
 
     // Create an empty assistant message that we'll stream into
     const assistantMessage = addChatMessage({ role: 'assistant', content: '' });
     setStreamingMessageId(assistantMessage.id);
-
-    const conversationHistory = chatHistory.map((msg) => ({
-      role: msg.role as 'user' | 'assistant',
-      content: msg.content,
-    }));
 
     let accumulatedContent = '';
 
