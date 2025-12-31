@@ -384,15 +384,19 @@ Gut: "Ich habe Fehler gemacht. Das macht mich nicht zu einem schlechten Menschen
 Halte deine Antworten kurz und gesprächig (2-4 Sätze meist).`;
 }
 
-export async function chatWithTherapist(
+export async function chatWithTherapistStream(
   critic: InnerCritic | null,
   conversationHistory: ChatCompletionMessage[],
-  userMessage: string
-): Promise<string> {
+  userMessage: string,
+  onChunk: (chunk: string) => void,
+  onComplete: (fullMessage: string) => void,
+  onError: (error: Error) => void
+): Promise<void> {
   const apiKey = await getApiKey();
 
   if (!apiKey) {
-    throw new Error('OpenRouter API key not set. Please add your API key in settings.');
+    onError(new Error('OpenRouter API key not set. Please add your API key in settings.'));
+    return;
   }
 
   const systemPrompt = buildTherapistSystemPrompt(critic);
@@ -403,29 +407,69 @@ export async function chatWithTherapist(
     { role: 'user', content: userMessage },
   ];
 
-  const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'Inner Critic Builder',
-    },
-    body: JSON.stringify({
-      model: 'openai/gpt-5',
-      messages,
-      max_tokens: 500,
-      temperature: 0.7,
-    }),
-  });
+  try {
+    const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'HTTP-Referer': window.location.origin,
+        'X-Title': 'Inner Critic Builder',
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-5',
+        messages,
+        max_tokens: 10000,
+        temperature: 0.7,
+        stream: true,
+      }),
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenRouter API error: ${error}`);
+    if (!response.ok) {
+      const error = await response.text();
+      onError(new Error(`OpenRouter API error: ${error}`));
+      return;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      onError(new Error('No response body'));
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let fullMessage = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              fullMessage += content;
+              onChunk(content);
+            }
+          } catch {
+            // Skip malformed JSON lines
+          }
+        }
+      }
+    }
+
+    onComplete(fullMessage || 'I\'m here with you.');
+  } catch (err) {
+    onError(err instanceof Error ? err : new Error('Stream failed'));
   }
-
-  const data: OpenRouterResponse = await response.json();
-  return data.choices[0]?.message?.content || 'I\'m here with you.';
 }
 
 // ============================================

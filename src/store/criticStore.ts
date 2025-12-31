@@ -24,7 +24,8 @@ interface CriticState {
   removeCatchphrase: (phrase: string) => void;
   setProtectiveIntent: (intent: string) => void;
   setStep: (step: CriticState['currentStep']) => void;
-  addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => ChatMessage;
+  updateMessageContent: (messageId: string, content: string) => void;
   updateMessageAnalysis: (messageId: string, analysis: DeconstructionAnalysis) => void;
   clearChat: () => void;
   resetCritic: () => void;
@@ -162,12 +163,23 @@ export const useCriticStore = create<CriticState>()(
 
       setStep: (step) => set({ currentStep: step }),
 
-      addChatMessage: (message) =>
+      addChatMessage: (message) => {
+        const newMessage: ChatMessage = {
+          ...message,
+          id: generateId(),
+          timestamp: new Date(),
+        };
         set((state) => ({
-          chatHistory: [
-            ...state.chatHistory,
-            { ...message, id: generateId(), timestamp: new Date() },
-          ],
+          chatHistory: [...state.chatHistory, newMessage],
+        }));
+        return newMessage;
+      },
+
+      updateMessageContent: (messageId, content) =>
+        set((state) => ({
+          chatHistory: state.chatHistory.map((msg) =>
+            msg.id === messageId ? { ...msg, content } : msg
+          ),
         })),
 
       updateMessageAnalysis: (messageId, analysis) =>

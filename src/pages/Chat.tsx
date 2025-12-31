@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCriticStore } from '../store/criticStore';
-import { chatWithTherapist, getApiKey, deconstructMessage } from '../services/openrouter';
+import { chatWithTherapistStream, getApiKey, deconstructMessage } from '../services/openrouter';
 import { Send, Loader2, Settings, Trash2, Search, X, MessageCircle, Heart, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { ChatMessage, DeconstructionAnalysis, CriticPatternType } from '../types/critic';
@@ -19,7 +19,7 @@ const patternLabels: Record<CriticPatternType, string> = {
 };
 
 export function Chat() {
-  const { critic, chatHistory, addChatMessage, clearChat, updateMessageAnalysis } = useCriticStore();
+  const { critic, chatHistory, addChatMessage, updateMessageContent, clearChat, updateMessageAnalysis } = useCriticStore();
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -30,6 +30,7 @@ export function Chat() {
     analysis: DeconstructionAnalysis;
   } | null>(null);
   const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -51,19 +52,39 @@ export function Chat() {
     addChatMessage({ role: 'user', content: userMessage });
     setIsLoading(true);
 
-    try {
-      const conversationHistory = chatHistory.map((msg) => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content,
-      }));
+    // Create an empty assistant message that we'll stream into
+    const assistantMessage = addChatMessage({ role: 'assistant', content: '' });
+    setStreamingMessageId(assistantMessage.id);
 
-      const response = await chatWithTherapist(critic, conversationHistory, userMessage);
-      addChatMessage({ role: 'assistant', content: response });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to get response');
-    } finally {
-      setIsLoading(false);
-    }
+    const conversationHistory = chatHistory.map((msg) => ({
+      role: msg.role as 'user' | 'assistant',
+      content: msg.content,
+    }));
+
+    let accumulatedContent = '';
+
+    await chatWithTherapistStream(
+      critic,
+      conversationHistory,
+      userMessage,
+      // onChunk - append each chunk to the message
+      (chunk) => {
+        accumulatedContent += chunk;
+        updateMessageContent(assistantMessage.id, accumulatedContent);
+      },
+      // onComplete
+      (fullMessage) => {
+        updateMessageContent(assistantMessage.id, fullMessage);
+        setIsLoading(false);
+        setStreamingMessageId(null);
+      },
+      // onError
+      (err) => {
+        setError(err.message);
+        setIsLoading(false);
+        setStreamingMessageId(null);
+      }
+    );
   };
 
   const handleDeconstruct = async (message: ChatMessage) => {
@@ -267,6 +288,9 @@ export function Chat() {
                         ? renderHighlightedContent(message)
                         : message.content
                       }
+                      {streamingMessageId === message.id && (
+                        <span className="inline-block w-2 h-5 bg-brutal-black animate-pulse ml-0.5 align-middle" />
+                      )}
                     </p>
 
                     {/* Analysis indicator for user messages */}
@@ -282,17 +306,6 @@ export function Chat() {
                   </div>
                 </div>
               ))}
-
-              {isLoading && (
-                <div className="flex justify-start">
-                  <div className="brutal-border border-2 bg-brutal-white p-4">
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span className="font-medium text-brutal-black/60">Thinking...</span>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div ref={messagesEndRef} />
             </div>
