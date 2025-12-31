@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { InnerCritic, ChatMessage, CriticBelief, CriticTrigger } from '../types/critic';
+import type { InnerCritic, ChatMessage, CriticBelief, CriticTrigger, DeconstructionAnalysis } from '../types/critic';
 
 interface CriticState {
   // Current critic being created/edited
@@ -25,6 +25,7 @@ interface CriticState {
   setProtectiveIntent: (intent: string) => void;
   setStep: (step: CriticState['currentStep']) => void;
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  updateMessageAnalysis: (messageId: string, analysis: DeconstructionAnalysis) => void;
   clearChat: () => void;
   resetCritic: () => void;
 }
@@ -167,6 +168,13 @@ export const useCriticStore = create<CriticState>()(
             ...state.chatHistory,
             { ...message, id: generateId(), timestamp: new Date() },
           ],
+        })),
+
+      updateMessageAnalysis: (messageId, analysis) =>
+        set((state) => ({
+          chatHistory: state.chatHistory.map((msg) =>
+            msg.id === messageId ? { ...msg, analysis } : msg
+          ),
         })),
 
       clearChat: () => set({ chatHistory: [] }),

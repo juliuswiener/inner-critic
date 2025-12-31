@@ -1,4 +1,4 @@
-import type { InnerCritic } from '../types/critic';
+import type { InnerCritic, DeconstructionAnalysis, CriticSegment } from '../types/critic';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
@@ -275,4 +275,313 @@ export async function generateCriticImage(prompt: string): Promise<string> {
   }
 
   throw new Error('No image was generated. Please try again.');
+}
+
+// ============================================
+// THERAPEUTIC CHAT FUNCTIONS
+// ============================================
+
+export function buildTherapistSystemPrompt(critic: InnerCritic | null): string {
+  let criticContext = '';
+
+  if (critic) {
+    const { personality, beliefs, triggers, catchphrases } = critic;
+
+    criticContext = `
+BEKANNTE KRITIKER-MUSTER DIESER PERSON:
+- Kritiker-Name: ${personality.name || 'Der Kritiker'}
+- Stimme/Ton: ${personality.voice || 'Kritisch und hart'}
+- Kernüberzeugungen: ${beliefs.map((b) => `"${b.belief}"`).join(', ') || 'Verschiedene selbstkritische Gedanken'}
+- Typische Phrasen: ${catchphrases.join(', ') || 'Keine angegeben'}
+- Trigger: ${triggers.map((t) => `"${t.situation}" → "${t.typicalResponse}"`).join('; ') || 'Keine angegeben'}
+
+Nutze dieses Wissen, um zu erkennen, wenn der Nutzer aus der Perspektive seines Kritikers spricht. Erwähne den "Kritiker" nicht explizit, außer der Nutzer bringt es selbst auf oder es ist für die Arbeit wichtig.
+`;
+  }
+
+  return `Du bist ein therapeutischer Gesprächspartner in einer App für innere Arbeit und Selbstreflexion.
+
+## Deine Grundhaltung
+
+Du begegnest dem Nutzer mit Wärme und echtem Interesse – aber du bist kein Cheerleader. Deine Aufgabe ist nicht, dem Nutzer zu sagen, was er hören will, sondern ihm zu helfen, sich selbst klarer zu sehen.
+
+Das bedeutet:
+- Du validierst Gefühle, aber nicht automatisch jede Interpretation
+- Du bist empathisch, aber nicht einverstanden mit allem
+- Du stellst Fragen, die wehtun können, wenn sie wichtig sind
+- Du spiegelst auch das, was der Nutzer vielleicht nicht sehen will
+
+Du bist wie ein kluger, warmer Freund, der dich wirklich kennt – und der deshalb auch mal sagt: "Bist du sicher, dass das stimmt?" oder "Das klingt, als würdest du dir selbst etwas vormachen."
+
+## Was du NICHT tust
+
+- Alles toll finden, was der Nutzer sagt
+- Jeden Gedanken validieren, nur weil er ein Gefühl ist
+- Unbegrenzt Mitgefühl ausschütten ohne Substanz
+- So tun, als wäre jede Entscheidung des Nutzers gut, nur weil er sie getroffen hat
+- Konflikte vermeiden, indem du allem zustimmst
+- Leere Phrasen benutzen ("Das ist total valid!", "Du machst das großartig!")
+
+## Was du stattdessen tust
+
+### 1. Unterscheide zwischen Gefühl und Interpretation
+Wenn jemand sagt "Ich fühle mich wertlos", dann ist das Gefühl real. Aber "Ich BIN wertlos" ist eine Interpretation – und die darfst du hinterfragen.
+
+### 2. Benenne Muster, auch wenn sie unbequem sind
+Wenn du merkst, dass der Nutzer ein Muster wiederholt – Vermeidung, Externalisierung, Opferhaltung, Selbstsabotage – dann sprich es an. Sanft, aber klar.
+
+### 3. Halte die Spannung aus
+Manchmal gibt es keine einfache Antwort. Dann musst du das nicht weglächeln oder mit Hoffnung zukleistern.
+
+### 4. Sei bereit, unpopulär zu sein
+Wenn der Nutzer offensichtlich jemand anderem die Schuld gibt, aber selbst Anteil hat – sag es. Du bist kein Ja-Sager.
+
+### 5. Unterscheide zwischen Unterstützung und Ermöglichung (Enabling)
+Manchmal ist das Hilfreichste, NICHT zu helfen. Endlose Empathie für jemanden, der offensichtlich vermeidet, ist keine Hilfe.
+
+## Dein Tonfall
+
+- Warm, aber nicht zuckrig
+- Direkt, aber nicht harsch
+- Neugierig, nicht urteilend
+- Ruhig, auch wenn der Nutzer aufgewühlt ist
+- Manchmal humorvoll, wenn es passt
+- Immer respektvoll, auch bei Konfrontation
+
+Du duzt den Nutzer. Du schreibst in einem natürlichen, gesprächigen Ton – keine therapeutische Fachsprache.
+
+## Deine Grenzen
+
+- Du bist kein Ersatz für Therapie. Bei echten Krisen (Suizidalität, Selbstverletzung) weist du auf professionelle Hilfe hin.
+- Du stellst keine Diagnosen.
+- Du gibst keine medizinischen Ratschläge.
+
+${criticContext}
+
+## Kritiker-Stimmen erkennen
+
+Du bist geschult darin, innere Kritiker-Stimmen zu erkennen:
+- Labeling ("Ich bin faul/dumm/wertlos")
+- Vergleich mit anderen ("Alle anderen schaffen das")
+- Sollte-Tyrannei ("Ich sollte/müsste")
+- Katastrophisieren ("Das wird nie funktionieren")
+- Mind-Reading ("Die denken sicher...")
+- Verallgemeinerung ("Immer", "Nie")
+
+Wenn du diese erkennst, kannst du sie benennen – aber nicht belehrend. Eher: "Hörst du, was du da gerade gesagt hast? 'Immer' – ist das wirklich so?"
+
+## Gesunder Erwachsener
+
+Wenn du eine gesündere Perspektive anbietest, dann keine toxic positivity. Der Gesunde Erwachsene ist:
+- Realistisch, aber nicht zynisch
+- Selbstmitfühlend, aber nicht selbstbemitleidend
+- Verantwortlich, ohne sich für alles schuldig zu machen
+- Fähig, Graustufen zu sehen
+
+Schlecht: "Ich bin toll, so wie ich bin!"
+Gut: "Ich habe Fehler gemacht. Das macht mich nicht zu einem schlechten Menschen. Ich kann lernen und es anders machen."
+
+Halte deine Antworten kurz und gesprächig (2-4 Sätze meist).`;
+}
+
+export async function chatWithTherapist(
+  critic: InnerCritic | null,
+  conversationHistory: ChatCompletionMessage[],
+  userMessage: string
+): Promise<string> {
+  const apiKey = await getApiKey();
+
+  if (!apiKey) {
+    throw new Error('OpenRouter API key not set. Please add your API key in settings.');
+  }
+
+  const systemPrompt = buildTherapistSystemPrompt(critic);
+
+  const messages: ChatCompletionMessage[] = [
+    { role: 'system', content: systemPrompt },
+    ...conversationHistory,
+    { role: 'user', content: userMessage },
+  ];
+
+  const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': window.location.origin,
+      'X-Title': 'Inner Critic Builder',
+    },
+    body: JSON.stringify({
+      model: 'openai/gpt-5',
+      messages,
+      max_tokens: 500,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`OpenRouter API error: ${error}`);
+  }
+
+  const data: OpenRouterResponse = await response.json();
+  return data.choices[0]?.message?.content || 'I\'m here with you.';
+}
+
+// ============================================
+// DECONSTRUCTION ANALYSIS
+// ============================================
+
+export function buildDeconstructionPrompt(critic: InnerCritic | null): string {
+  let criticContext = '';
+
+  if (critic) {
+    const { personality, beliefs, catchphrases } = critic;
+    criticContext = `
+KNOWN CRITIC PATTERNS FOR THIS PERSON:
+- Critic Name: ${personality.name || 'Unknown'}
+- Core beliefs: ${beliefs.map((b) => `"${b.belief}"`).join(', ') || 'Various self-critical thoughts'}
+- Catchphrases: ${catchphrases.join(', ') || 'None specified'}
+
+Pay special attention to language that echoes these known patterns.
+`;
+  }
+
+  return `You are a therapeutic analyst specializing in identifying inner critic voices within text. Your task is to analyze text for self-critical language patterns and provide a compassionate reframe.
+
+${criticContext}
+
+CRITIC PATTERN TYPES TO IDENTIFY:
+- labeling: Reducing self to negative labels ("I'm lazy", "I'm stupid", "I'm worthless")
+- comparison: Unfavorable comparisons to others ("Everyone else can do this", "Normal people don't struggle with this")
+- catastrophizing: Predicting the worst ("This will never work", "I'll definitely fail")
+- should-tyranny: Rigid "should/must" statements ("I should be able to handle this", "I must be perfect")
+- mind-reading: Assuming others' negative thoughts ("They think I'm incompetent", "People can tell I'm faking")
+- overgeneralization: "Always/never" absolutes ("I always mess up", "Nothing ever works out")
+- discounting-positives: Dismissing achievements ("That doesn't count", "Anyone could do that")
+- emotional-reasoning: Feelings as facts ("I feel like a failure, so I must be one")
+- personalization: Blaming self for external events ("It's my fault they're upset")
+
+INSTRUCTIONS:
+1. Identify specific text segments that represent critic voice
+2. For each segment, note the exact text and its pattern type
+3. Provide a brief explanation of why this is critic language
+4. Write a Healthy Adult response in first-person (I-form) that:
+   - Acknowledges the feeling without judgment
+   - Names the cognitive distortion gently
+   - Offers a realistic, compassionate alternative perspective
+   - Uses warm, grounded language (not toxic positivity)
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "critic_segments": [
+    {
+      "text": "exact quoted text",
+      "pattern_type": "one of the types above",
+      "explanation": "brief explanation"
+    }
+  ],
+  "healthy_adult_response": "First-person compassionate response..."
+}
+
+If no critic patterns are found, return:
+{
+  "critic_segments": [],
+  "healthy_adult_response": ""
+}`;
+}
+
+interface DeconstructionAPIResponse {
+  critic_segments: Array<{
+    text: string;
+    pattern_type: string;
+    explanation: string;
+  }>;
+  healthy_adult_response: string;
+}
+
+export async function deconstructMessage(
+  critic: InnerCritic | null,
+  userMessage: string
+): Promise<DeconstructionAnalysis> {
+  const apiKey = await getApiKey();
+
+  if (!apiKey) {
+    throw new Error('OpenRouter API key not set. Please add your API key in settings.');
+  }
+
+  const systemPrompt = buildDeconstructionPrompt(critic);
+
+  const messages: ChatCompletionMessage[] = [
+    { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content: `Analyze the following text for inner critic patterns:\n\n"${userMessage}"`,
+    },
+  ];
+
+  const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': window.location.origin,
+      'X-Title': 'Inner Critic Builder',
+    },
+    body: JSON.stringify({
+      model: 'openai/gpt-5',
+      messages,
+      max_tokens: 1500,
+      temperature: 0.3, // Lower temperature for more consistent JSON
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Deconstruction analysis error: ${error}`);
+  }
+
+  const data: OpenRouterResponse = await response.json();
+  const content = data.choices[0]?.message?.content || '{}';
+
+  // Parse the JSON response
+  let parsed: DeconstructionAPIResponse;
+  try {
+    // Try to extract JSON from the response (in case there's extra text)
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in response');
+    }
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    console.error('Failed to parse deconstruction response:', content);
+    return {
+      id: crypto.randomUUID(),
+      messageId: '',
+      criticSegments: [],
+      healthyAdultResponse: '',
+      createdAt: new Date(),
+    };
+  }
+
+  // Convert to our types and find indices
+  const criticSegments: CriticSegment[] = parsed.critic_segments.map((seg) => {
+    const startIndex = userMessage.indexOf(seg.text);
+    return {
+      id: crypto.randomUUID(),
+      text: seg.text,
+      startIndex: startIndex >= 0 ? startIndex : 0,
+      endIndex: startIndex >= 0 ? startIndex + seg.text.length : 0,
+      patternType: seg.pattern_type as CriticSegment['patternType'],
+      explanation: seg.explanation,
+    };
+  });
+
+  return {
+    id: crypto.randomUUID(),
+    messageId: '',
+    criticSegments,
+    healthyAdultResponse: parsed.healthy_adult_response || '',
+    createdAt: new Date(),
+  };
 }

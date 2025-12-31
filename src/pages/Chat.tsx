@@ -1,21 +1,37 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useCriticStore } from '../store/criticStore';
-import { chatWithCritic, getApiKey, generateHealthyAdultResponse } from '../services/openrouter';
-import { Send, Loader2, Settings, Trash2, Shield, Heart, User } from 'lucide-react';
+import { chatWithTherapist, getApiKey, deconstructMessage } from '../services/openrouter';
+import { Send, Loader2, Settings, Trash2, Search, X, MessageCircle, Heart, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { ChatMessage } from '../types/critic';
+import type { ChatMessage, DeconstructionAnalysis, CriticPatternType } from '../types/critic';
+
+// Pattern type to display name mapping
+const patternLabels: Record<CriticPatternType, string> = {
+  'labeling': 'Labeling',
+  'comparison': 'Comparison',
+  'catastrophizing': 'Catastrophizing',
+  'should-tyranny': 'Should-Tyranny',
+  'mind-reading': 'Mind-Reading',
+  'overgeneralization': 'Overgeneralization',
+  'discounting-positives': 'Discounting Positives',
+  'emotional-reasoning': 'Emotional Reasoning',
+  'personalization': 'Personalization',
+};
 
 export function Chat() {
-  const navigate = useNavigate();
-  const { critic, chatHistory, addChatMessage, clearChat } = useCriticStore();
+  const { critic, chatHistory, addChatMessage, clearChat, updateMessageAnalysis } = useCriticStore();
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingShieldId, setLoadingShieldId] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
-  const [healthyAdultResponses, setHealthyAdultResponses] = useState<Record<string, string>>({});
+  const [activeAnalysis, setActiveAnalysis] = useState<{
+    messageId: string;
+    analysis: DeconstructionAnalysis;
+  } | null>(null);
+  const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getApiKey().then((key) => setHasApiKey(!!key));
@@ -23,12 +39,7 @@ export function Chat() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory, healthyAdultResponses]);
-
-  if (!critic) {
-    navigate('/');
-    return null;
-  }
+  }, [chatHistory]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -42,12 +53,12 @@ export function Chat() {
 
     try {
       const conversationHistory = chatHistory.map((msg) => ({
-        role: msg.role === 'user' ? 'user' as const : 'assistant' as const,
+        role: msg.role as 'user' | 'assistant',
         content: msg.content,
       }));
 
-      const response = await chatWithCritic(critic, conversationHistory, userMessage);
-      addChatMessage({ role: 'critic', content: response });
+      const response = await chatWithTherapist(critic, conversationHistory, userMessage);
+      addChatMessage({ role: 'assistant', content: response });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to get response');
     } finally {
@@ -55,33 +66,106 @@ export function Chat() {
     }
   };
 
-  const handleShieldClick = async (criticMessage: ChatMessage) => {
-    if (loadingShieldId || healthyAdultResponses[criticMessage.id]) return;
+  const handleDeconstruct = async (message: ChatMessage) => {
+    if (isAnalyzing || message.role !== 'user') return;
 
-    setLoadingShieldId(criticMessage.id);
+    // If already analyzed, just show the existing analysis
+    if (message.analysis) {
+      setActiveAnalysis({
+        messageId: message.id,
+        analysis: message.analysis,
+      });
+      return;
+    }
+
+    setIsAnalyzing(true);
     setError(null);
 
-    const messageIndex = chatHistory.findIndex((m) => m.id === criticMessage.id);
-    const precedingUserMessage = chatHistory
-      .slice(0, messageIndex)
-      .reverse()
-      .find((m) => m.role === 'user');
-
     try {
-      const response = await generateHealthyAdultResponse(
-        critic,
-        criticMessage.content,
-        precedingUserMessage?.content || ''
-      );
-      setHealthyAdultResponses((prev) => ({
-        ...prev,
-        [criticMessage.id]: response,
-      }));
+      const analysis = await deconstructMessage(critic, message.content);
+      analysis.messageId = message.id;
+
+      // Store the analysis in the message
+      updateMessageAnalysis(message.id, analysis);
+
+      setActiveAnalysis({
+        messageId: message.id,
+        analysis,
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to get Healthy Adult response');
+      setError(err instanceof Error ? err.message : 'Failed to analyze message');
     } finally {
-      setLoadingShieldId(null);
+      setIsAnalyzing(false);
     }
+  };
+
+  const closeAnalysis = () => {
+    setActiveAnalysis(null);
+    setHoveredSegment(null);
+  };
+
+  // Render message content with highlighted critic segments
+  const renderHighlightedContent = (message: ChatMessage) => {
+    if (!activeAnalysis || activeAnalysis.messageId !== message.id) {
+      return message.content;
+    }
+
+    const { analysis } = activeAnalysis;
+    if (!analysis.criticSegments.length) {
+      return message.content;
+    }
+
+    // Sort segments by start index
+    const sortedSegments = [...analysis.criticSegments].sort((a, b) => a.startIndex - b.startIndex);
+
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+
+    sortedSegments.forEach((segment) => {
+      // Add text before this segment
+      if (segment.startIndex > lastIndex) {
+        parts.push(
+          <span key={`text-${lastIndex}`}>
+            {message.content.slice(lastIndex, segment.startIndex)}
+          </span>
+        );
+      }
+
+      // Add the highlighted segment
+      parts.push(
+        <span
+          key={segment.id}
+          className={`relative inline critic-highlight cursor-pointer transition-all duration-200 ${
+            hoveredSegment === segment.id
+              ? 'bg-blue-300 decoration-blue-600'
+              : 'bg-blue-100 decoration-blue-400'
+          }`}
+          style={{
+            textDecoration: 'underline',
+            textDecorationStyle: 'wavy',
+            textDecorationThickness: '2px',
+            textUnderlineOffset: '3px',
+          }}
+          onMouseEnter={() => setHoveredSegment(segment.id)}
+          onMouseLeave={() => setHoveredSegment(null)}
+        >
+          {segment.text}
+        </span>
+      );
+
+      lastIndex = segment.endIndex;
+    });
+
+    // Add remaining text
+    if (lastIndex < message.content.length) {
+      parts.push(
+        <span key={`text-${lastIndex}`}>
+          {message.content.slice(lastIndex)}
+        </span>
+      );
+    }
+
+    return parts;
   };
 
   if (hasApiKey === false) {
@@ -91,7 +175,7 @@ export function Chat() {
           <Settings className="w-16 h-16 mx-auto mb-4" strokeWidth={2} />
           <h2 className="text-2xl font-black uppercase mb-4">API Key Required</h2>
           <p className="font-medium mb-6">
-            To chat with your inner critic, you need to add your OpenRouter API key in the settings.
+            To start a conversation, you need to add your OpenRouter API key.
           </p>
           <Link to="/settings" className="brutal-btn-primary inline-flex items-center gap-2">
             Go to Settings
@@ -101,241 +185,270 @@ export function Chat() {
     );
   }
 
-  // Get the latest critic message for the main display
-  const latestCriticMessage = [...chatHistory].reverse().find((m) => m.role === 'critic');
-  const latestHealthyAdultResponse = latestCriticMessage
-    ? healthyAdultResponses[latestCriticMessage.id]
-    : null;
+  // Find the last user message for deconstruction
+  const lastUserMessage = [...chatHistory].reverse().find((m) => m.role === 'user');
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6">
-      {/* Scene Header */}
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-black uppercase">The Conversation</h1>
-        <button
-          onClick={() => {
-            if (confirm('Clear all conversation history?')) {
-              clearChat();
-              setHealthyAdultResponses({});
-            }
-          }}
-          className="p-2 brutal-border border-2 bg-brutal-white brutal-hover"
-          title="Clear conversation"
-        >
-          <Trash2 className="w-5 h-5" strokeWidth={2.5} />
-        </button>
-      </div>
-
-      {/* Main Scene Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT: Inner Critic Character */}
-        <div className="lg:col-span-1">
-          <div className="brutal-card bg-brutal-pink sticky top-24">
-            {/* Critic Avatar */}
-            <div className="aspect-square brutal-border bg-brutal-white mb-4 overflow-hidden">
-              {critic.appearance.imageUrl ? (
-                <img
-                  src={critic.appearance.imageUrl}
-                  alt={critic.personality.name || 'Your inner critic'}
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-brutal-gray">
-                  <User className="w-16 h-16" strokeWidth={1.5} />
-                </div>
-              )}
+    <div className="h-[calc(100vh-120px)] flex">
+      {/* Main Chat Container */}
+      <div
+        ref={chatContainerRef}
+        className={`flex-1 flex flex-col transition-all duration-300 ${
+          activeAnalysis ? 'mr-[400px]' : ''
+        }`}
+      >
+        {/* Chat Header */}
+        <div className="flex justify-between items-center px-6 py-4 border-b-4 border-brutal-black bg-brutal-white">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 brutal-border border-2 bg-brutal-green flex items-center justify-center">
+              <MessageCircle className="w-5 h-5" strokeWidth={2.5} />
             </div>
-
-            {/* Critic Name & Info */}
-            <h2 className="text-xl font-black uppercase mb-1">
-              {critic.personality.name || 'The Critic'}
-            </h2>
-            <p className="font-medium text-sm text-brutal-black/70 mb-4">
-              {critic.personality.voice || 'Critical voice'}
-            </p>
-
-            {/* Current Speech Bubble */}
-            {latestCriticMessage && (
-              <div className="relative">
-                {/* Speech bubble pointer */}
-                <div className="absolute -top-2 left-6 w-4 h-4 bg-brutal-white brutal-border border-2 rotate-45 z-0" />
-
-                <div className="brutal-border border-2 bg-brutal-white p-4 relative z-10">
-                  <p className="font-bold italic">"{latestCriticMessage.content}"</p>
-                </div>
-
-                {/* Shield button */}
-                {!latestHealthyAdultResponse && (
-                  <button
-                    onClick={() => handleShieldClick(latestCriticMessage)}
-                    disabled={loadingShieldId === latestCriticMessage.id}
-                    className={`mt-3 w-full flex items-center justify-center gap-2 px-4 py-3 brutal-border border-2 font-bold brutal-hover ${
-                      loadingShieldId === latestCriticMessage.id
-                        ? 'bg-brutal-gray'
-                        : 'bg-brutal-green'
-                    }`}
-                  >
-                    {loadingShieldId === latestCriticMessage.id ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        Summoning protection...
-                      </>
-                    ) : (
-                      <>
-                        <Shield className="w-5 h-5" strokeWidth={2.5} />
-                        Activate Healthy Adult
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            )}
-
-            {isLoading && (
-              <div className="brutal-border border-2 bg-brutal-white p-4 mt-4">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span className="font-medium italic">The critic is thinking...</span>
-                </div>
-              </div>
-            )}
+            <div>
+              <h1 className="text-lg font-black uppercase">Inner Work</h1>
+              <p className="text-xs font-bold text-brutal-black/60">Therapeutic Companion</p>
+            </div>
           </div>
+          <button
+            onClick={() => {
+              if (confirm('Clear all conversation history?')) {
+                clearChat();
+                setActiveAnalysis(null);
+              }
+            }}
+            className="p-2 brutal-border border-2 bg-brutal-white brutal-hover"
+            title="Clear conversation"
+          >
+            <Trash2 className="w-5 h-5" strokeWidth={2.5} />
+          </button>
         </div>
 
-        {/* RIGHT: Your space + Healthy Adult */}
-        <div className="lg:col-span-2 flex flex-col">
-          {/* Healthy Adult Response (when active) */}
-          {latestHealthyAdultResponse && (
-            <div className="brutal-card bg-brutal-green mb-6">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-12 h-12 brutal-border border-2 bg-brutal-white flex items-center justify-center">
-                  <Heart className="w-6 h-6" strokeWidth={2.5} />
-                </div>
-                <div>
-                  <h3 className="font-black uppercase">Healthy Adult</h3>
-                  <p className="text-xs font-bold text-brutal-black/60 uppercase">
-                    Protecting your inner child
-                  </p>
-                </div>
+        {/* Messages Area */}
+        <div className="flex-1 overflow-y-auto bg-[#FAF9F7] px-6 py-4">
+          {chatHistory.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center px-4">
+              <div className="w-20 h-20 brutal-border border-2 bg-brutal-green flex items-center justify-center mb-6">
+                <Heart className="w-10 h-10" strokeWidth={2} />
               </div>
-              <div className="brutal-border border-2 bg-brutal-white p-4">
-                <p className="font-medium">{latestHealthyAdultResponse}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Conversation History */}
-          <div className="brutal-card bg-brutal-blue flex-1 mb-6">
-            <h3 className="font-black uppercase mb-4">Your Thoughts</h3>
-
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-              {chatHistory.length === 0 ? (
-                <div className="text-center py-8">
-                  <p className="font-bold mb-2">Share what's on your mind</p>
-                  <p className="font-medium text-brutal-black/60 text-sm">
-                    Type below to start a dialogue with your inner critic.
-                    <br />
-                    When it responds, you can activate your Healthy Adult for protection.
-                  </p>
-                </div>
-              ) : (
-                chatHistory.map((message) => {
-                  if (message.role === 'user') {
-                    return (
-                      <div key={message.id} className="brutal-border border-2 bg-brutal-white p-3">
-                        <p className="font-medium">{message.content}</p>
-                      </div>
-                    );
-                  }
-                  return null;
-                })
+              <h2 className="text-xl font-black uppercase mb-2">Welcome</h2>
+              <p className="font-medium text-brutal-black/70 max-w-md">
+                This is a safe space for self-reflection. Share what's on your mind,
+                and I'll be here to listen and explore with you.
+              </p>
+              {critic && (
+                <p className="font-medium text-brutal-black/50 text-sm mt-4 max-w-md">
+                  I'm aware of your inner critic "{critic.personality.name}" and will help you
+                  recognize when it might be speaking.
+                </p>
               )}
+            </div>
+          ) : (
+            <div className="space-y-4 max-w-2xl mx-auto">
+              {chatHistory.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[85%] brutal-border border-2 p-4 ${
+                      message.role === 'user'
+                        ? 'bg-brutal-blue'
+                        : 'bg-brutal-white'
+                    } ${
+                      activeAnalysis?.messageId === message.id
+                        ? 'ring-4 ring-blue-400 ring-offset-2'
+                        : ''
+                    }`}
+                  >
+                    <p className="font-black uppercase text-xs mb-2 text-brutal-black/60">
+                      {message.role === 'user' ? 'You' : 'Companion'}
+                    </p>
+                    <p className="font-medium leading-relaxed">
+                      {message.role === 'user'
+                        ? renderHighlightedContent(message)
+                        : message.content
+                      }
+                    </p>
+
+                    {/* Analysis indicator for user messages */}
+                    {message.role === 'user' && message.analysis && (
+                      <button
+                        onClick={() => handleDeconstruct(message)}
+                        className="mt-3 text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                      >
+                        <Search className="w-3 h-3" />
+                        {message.analysis.criticSegments.length} pattern{message.analysis.criticSegments.length !== 1 ? 's' : ''} found
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="brutal-border border-2 bg-brutal-white p-4">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span className="font-medium text-brutal-black/60">Thinking...</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div ref={messagesEndRef} />
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Input Area */}
-          <div className="brutal-card bg-brutal-yellow">
-            <label className="block font-black uppercase text-sm mb-2">
-              What would you like to say?
-            </label>
-            <div className="flex gap-3">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
-                placeholder="Express your thoughts, fears, or doubts..."
-                className="flex-1 brutal-input min-h-[80px] resize-none"
-                disabled={isLoading}
-              />
-              <button
-                onClick={handleSend}
-                disabled={isLoading || !input.trim()}
-                className={`brutal-btn self-end ${
-                  isLoading || !input.trim()
-                    ? 'bg-brutal-gray cursor-not-allowed'
-                    : 'bg-brutal-white'
-                }`}
-              >
-                {isLoading ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <Send className="w-5 h-5" strokeWidth={2.5} />
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Error message */}
+        {/* Input Area */}
+        <div className="bg-brutal-white border-t-4 border-brutal-black px-6 py-4">
           {error && (
-            <div className="mt-4 p-3 brutal-border bg-brutal-red text-brutal-white font-bold">
+            <div className="mb-4 p-3 brutal-border border-2 bg-brutal-red text-brutal-white font-bold flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
               {error}
             </div>
           )}
+
+          <div className="flex gap-3 max-w-2xl mx-auto">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder="Share what's on your mind..."
+              className="flex-1 brutal-input min-h-[60px] max-h-[150px] resize-none"
+              disabled={isLoading}
+            />
+            <button
+              onClick={handleSend}
+              disabled={isLoading || !input.trim()}
+              className={`brutal-btn self-end ${
+                isLoading || !input.trim()
+                  ? 'bg-brutal-gray cursor-not-allowed'
+                  : 'bg-brutal-white'
+              }`}
+            >
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Send className="w-5 h-5" strokeWidth={2.5} />
+              )}
+            </button>
+          </div>
+
+          {/* Deconstruct Button */}
+          {lastUserMessage && !activeAnalysis && (
+            <div className="flex justify-center mt-4">
+              <button
+                onClick={() => handleDeconstruct(lastUserMessage)}
+                disabled={isAnalyzing}
+                className={`flex items-center gap-2 px-6 py-3 brutal-border border-2 font-bold transition-all ${
+                  isAnalyzing
+                    ? 'bg-brutal-gray cursor-not-allowed'
+                    : 'bg-blue-100 hover:bg-blue-200 text-blue-800'
+                }`}
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-5 h-5" strokeWidth={2.5} />
+                    Deconstruct
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Conversation History (expandable) */}
-      {chatHistory.length > 2 && (
-        <details className="mt-6">
-          <summary className="cursor-pointer font-black uppercase text-sm mb-3 hover:text-brutal-black/70">
-            View Full Conversation History ({chatHistory.length} messages)
-          </summary>
-          <div className="brutal-card bg-brutal-white">
-            <div className="space-y-3">
-              {chatHistory.map((message) => {
-                const healthyAdult = message.role === 'critic' ? healthyAdultResponses[message.id] : null;
-
-                return (
-                  <div key={message.id}>
-                    <div
-                      className={`p-3 brutal-border border-2 ${
-                        message.role === 'user' ? 'bg-brutal-blue' : 'bg-brutal-pink'
-                      }`}
-                    >
-                      <p className="font-black uppercase text-xs mb-1">
-                        {message.role === 'user' ? 'You' : critic.personality.name || 'Critic'}
-                      </p>
-                      <p className="font-medium text-sm">{message.content}</p>
-                    </div>
-
-                    {healthyAdult && (
-                      <div className="ml-8 mt-2 p-3 brutal-border border-2 bg-brutal-green">
-                        <p className="font-black uppercase text-xs mb-1">Healthy Adult</p>
-                        <p className="font-medium text-sm">{healthyAdult}</p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+      {/* Analysis Panel - slides in from right */}
+      {activeAnalysis && (
+        <div className="fixed right-0 top-0 h-full w-[400px] bg-brutal-white border-l-4 border-brutal-black overflow-y-auto shadow-brutal z-50 animate-slide-in-right">
+          {/* Panel Header */}
+          <div className="sticky top-0 bg-brutal-white border-b-4 border-brutal-black px-4 py-3 flex justify-between items-center">
+            <h2 className="font-black uppercase">Analysis</h2>
+            <button
+              onClick={closeAnalysis}
+              className="p-2 brutal-border border-2 bg-brutal-white brutal-hover"
+            >
+              <X className="w-4 h-4" strokeWidth={3} />
+            </button>
           </div>
-        </details>
+
+          <div className="p-4 space-y-4">
+            {/* Critic Segments */}
+            {activeAnalysis.analysis.criticSegments.length > 0 ? (
+              <>
+                <div className="brutal-border border-2 bg-blue-50 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center">
+                      <AlertCircle className="w-4 h-4 text-white" strokeWidth={2.5} />
+                    </div>
+                    <h3 className="font-black uppercase text-blue-800">Inner Critic</h3>
+                  </div>
+
+                  <div className="space-y-3">
+                    {activeAnalysis.analysis.criticSegments.map((segment) => (
+                      <div
+                        key={segment.id}
+                        className={`p-3 brutal-border border-2 bg-white transition-all duration-200 ${
+                          hoveredSegment === segment.id ? 'ring-2 ring-blue-400' : ''
+                        }`}
+                        onMouseEnter={() => setHoveredSegment(segment.id)}
+                        onMouseLeave={() => setHoveredSegment(null)}
+                      >
+                        <p className="font-bold italic mb-2">"{segment.text}"</p>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs font-black uppercase rounded">
+                            {patternLabels[segment.patternType] || segment.patternType}
+                          </span>
+                        </div>
+                        <p className="text-sm font-medium text-brutal-black/70">
+                          {segment.explanation}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Healthy Adult Response */}
+                {activeAnalysis.analysis.healthyAdultResponse && (
+                  <div className="brutal-border border-2 bg-green-50 p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
+                        <Heart className="w-4 h-4 text-white" strokeWidth={2.5} />
+                      </div>
+                      <h3 className="font-black uppercase text-green-800">Healthy Adult</h3>
+                    </div>
+                    <div className="brutal-border border-2 bg-white p-3">
+                      <p className="font-medium leading-relaxed">
+                        {activeAnalysis.analysis.healthyAdultResponse}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-center py-8">
+                <div className="w-16 h-16 brutal-border border-2 bg-brutal-green flex items-center justify-center mx-auto mb-4">
+                  <Heart className="w-8 h-8" strokeWidth={2} />
+                </div>
+                <h3 className="font-black uppercase mb-2">No Critic Patterns Found</h3>
+                <p className="font-medium text-brutal-black/60 text-sm">
+                  This message doesn't appear to contain obvious inner critic language.
+                  That's great - it sounds like you're speaking from a grounded place.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
