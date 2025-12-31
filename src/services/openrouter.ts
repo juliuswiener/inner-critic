@@ -571,7 +571,8 @@ interface DeconstructionAPIResponse {
 
 export async function deconstructMessage(
   critic: InnerCritic | null,
-  userMessage: string
+  userMessage: string,
+  conversationHistory: ChatCompletionMessage[] = []
 ): Promise<DeconstructionAnalysis> {
   const apiKey = await getApiKey();
 
@@ -581,11 +582,23 @@ export async function deconstructMessage(
 
   const systemPrompt = buildDeconstructionPrompt(critic);
 
+  // Build context from conversation history
+  let conversationContext = '';
+  if (conversationHistory.length > 0) {
+    conversationContext = `
+CONVERSATION CONTEXT (for understanding patterns and recurring themes):
+${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'Companion'}: ${msg.content}`).join('\n')}
+
+---
+
+`;
+  }
+
   const messages: ChatCompletionMessage[] = [
     { role: 'system', content: systemPrompt },
     {
       role: 'user',
-      content: `Analyze the following text for inner critic patterns:\n\n"${userMessage}"`,
+      content: `${conversationContext}Analyze the following text for inner critic patterns. Consider the conversation context above to identify recurring patterns or themes:\n\n"${userMessage}"`,
     },
   ];
 

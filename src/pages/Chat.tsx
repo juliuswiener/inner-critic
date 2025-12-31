@@ -108,7 +108,17 @@ export function Chat() {
     setError(null);
 
     try {
-      const analysis = await deconstructMessage(critic, message.content);
+      // Build conversation history up to this message for context
+      const messageIndex = chatHistory.findIndex((m) => m.id === message.id);
+      const conversationHistory = chatHistory
+        .slice(0, messageIndex)
+        .filter((msg) => msg.content.trim() !== '')
+        .map((msg) => ({
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content,
+        }));
+
+      const analysis = await deconstructMessage(critic, message.content, conversationHistory);
       analysis.messageId = message.id;
 
       // Store the analysis in the message
